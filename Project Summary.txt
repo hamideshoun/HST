@@ -1,0 +1,85 @@
+# Summary of HST to InfluxDB Pipeline Project
+
+## Project Overview
+- **Date Started**: Conversation began around October 21, 2025 (based on logs and file timestamps).
+- **Current Date**: October 29, 2025.
+- **Objective**: Convert sensor data from HST files (Citect format, with .HST header and .00x data files) to CSV, optionally sort by timestamp, and insert into InfluxDB v2.7.12. Handle large files (e.g., 6.5M+ rows, 150MB+ CSVs) efficiently.
+- **Key Achievements**: Built a robust Python wrapper (`citect_wrapper.py`) around a modified parser (`trendconvert.py`). Pipeline supports multi-folder processing, user prompts, multiprocessing, progress bars, and InfluxDB insertion. Data is chronological, viewable in InfluxDB UI with queries handling large datasets.
+- **Total Data Processed (Example Run)**: ~7.8M points (6,566,088 from Trend_ST_P_204_Run_Feedback.HST, 1,209,302 from Trend_TEST_Filter_Level.HST).
+- **Tools/Libraries Used**: pandas (data handling/sorting), influxdb_client (DB insertion), subprocess (run parser), multiprocessing (parallel conversion), tqdm (progress bars), glob/os (file handling).
+
+## Key Components
+### 1. **trendconvert.py (Core Parser)**
+- **Role**: Parses .HST header to list .00x files, extracts samples (2-byte or 8-byte format), calculates engineering values, appends to single CSV.
+- **Important Features**:
+  - Skips invalid values (optional with -d flag).
+  - Filters by date range (-start/-stop).
+  - Strips directories (-s).
+  - Decimal precision (-p, default 1).
+  - Pre-sorts .00x files by first timestamp (StartTime from header) for chronological order without post-sort overhead.
+  - Outputs: Single CSV per HST with columns ["Time", "Value"] (renamed to "Timestamp" in wrapper).
+- **Efficiency**: Processes ~134k samples per .00x file in seconds; full HST (~6M rows) in ~3-5min.
+- **Known Data**: Files like Trend_ST_P_204_Run_Feedback.00x (skips missing .000); Trend_TEST_Filter_Level.00x.
+- **Usage Example**: `python trendconvert.py "path/to/file.HST" -o csv -s -outdir output`
+
+### 2. **citect_wrapper.py (Main Pipeline)**
+- **Role**: User-friendly wrapper: Prompts for inputs/outputs, runs trendconvert.py, renames columns, (optionally sorts if needed), inserts to InfluxDB.
+- **User Prompts**:
+  - Input: Default folder, single custom, or text file with multiple folders.
+  - Output: Default, single custom, or 'output' subfolder per input folder.
+- **Processing Flow**:
+  - Collects all HST files across folders.
+  - Multiprocessing: Parallel HST to CSV conversion (uses cpu_count() - 1 processes).
+  - Post-Processing: Renames 'Time' → 'Timestamp'; optional full sort (removed in latest as pre-sort suffices).
+  - InfluxDB Insertion: Sequential (stable), batches 5000 points, tqdm progress.
+- **InfluxDB Config**:
+  - Single bucket: "PGDP" (creates if missing).
+  - Measurement: HST/CSV base name (e.g., "Trend_ST_P_204_Run_Feedback").
+  - Field: "value" (with float values).
+  - Tag: "tag" = HST base name (for filtering).
+  - Time: 'Timestamp' column (second precision).
+- **Efficiency**: Parallel conversion speeds up multi-HST runs; insertion ~10k rows/sec (~10min for 6M rows).
+- **Logs Example** (from your run):
+  - Folders processed with user choices.
+  - HSTs found: 2.
+  - Files sorted/processed chronologically.
+  - CSVs generated/sorted.
+  - Inserted 7.8M points successfully.
+- **Usage**: `python citect_wrapper.py` (interactive prompts).
+
+## Important Facts and Data
+- **Data Structure**:
+  - HST: .HST (header with file list), .00x (binary samples, 2/8-byte, with StartTime/EndTime).
+  - CSV: "Timestamp" (datetime), "Value" (float, rounded).
+  - InfluxDB: Bucket "PGDP"; measurements per HST; fields "value"; tags "tag" = measurement name.
+- **Performance Metrics** (from logs):
+  - Conversion: ~41it/s per .00x (134k samples ~3s).
+  - Sorting: ~1min for 6M rows (pandas in-memory).
+  - Insertion: ~10k rows/sec with tqdm.
+- **Issues Fixed**:
+  - Connection refused: InfluxDB install/setup (Windows binary, run influxd.exe).
+  - Multiprocessing: Added freeze_support() for Windows.
+  - Module Errors: Install tqdm (via `python -m pip install tqdm`).
+  - Sorting: Pre-sort by file StartTime; fallback post-sort.
+  - Bucket/Tags: Single "PGDP"; tags added; UI "no tag keys" = query range issue (use wide range like -365d).
+  - Query Limits: Influx UI caps rows; use aggregateWindow(mean) for charts, count() for totals.
+- **InfluxDB Verification**:
+  - Buckets: buckets() shows "PGDP".
+  - Measurements: schema.measurements(bucket: "PGDP") shows HST names.
+  - Data Count: 6,566,088 + 1,209,302 = 7,775,390 points.
+  - Query Example: `from(bucket: "PGDP") |> range(start: -365d) |> filter(fn: (r) => r._measurement == "Trend_ST_P_204_Run_Feedback")`
+  - Tags: Group by "tag" in queries to see.
+
+## Usage Guide
+- **Run Pipeline**: `python citect_wrapper.py` (prompts for folders/outputs).
+- **Multi-Folder**: Text file with paths (e.g., folders.txt).
+- **View Data**: Influx UI Data Explorer; wide range (-365d); aggregate for charts.
+- **Re-Run**: Overwrites CSVs; Influx appends (no duplicates if timestamps unique).
+
+## Future Notes
+- **Enhancements**: Add resume (JSON progress like MySQL script); chunked sort if >10M rows; parallel insertion if bottlenecks.
+- **Monitoring**: Check logs for skips (e.g., missing .000).
+- **Backup**: CSVs kept—archive before re-runs.
+- **Scale**: For 100+ HSTs, monitor RAM (pandas sort); add Dask if needed.
+
+This summary captures the full project.
