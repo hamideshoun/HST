@@ -5,6 +5,7 @@ import logging
 import json
 import gzip
 import shutil
+import time
 from influxdb_client import InfluxDBClient, Point, WritePrecision, BucketsApi
 from influxdb_client.client.write_api import SYNCHRONOUS
 import subprocess
@@ -13,13 +14,15 @@ from multiprocessing import Pool, cpu_count, freeze_support
 from tqdm import tqdm
 
 # Config
-DEFAULT_INPUT_FOLDER = r"D:\Acronis Backup\ipc backup\server  2\2023-04-26\TRENDDATA11"
-TRENDCONVERT_PATH = r"C:\Users\Administrator\Desktop\HST Translator\HST\trendconvert\trendconvert.py"
-SHARED_OUTPUT = r'Y:\\'  # VM #2 shared
-PROGRESS_FILE = os.path.join(os.path.dirname(__file__), 'processed_hsts.json')  # Resume tracking
+DEFAULT_INPUT_FOLDER = r"D:\khayyamian\Hamid\data"
+TRENDCONVERT_PATH = r"D:\khayyamian\Hamid\trendconvert\trendconvert.py"
+SHARED_OUTPUT = r'Y:\'  # Fixed: No trailing extra \
+PROGRESS_FILE = os.path.join(os.path.dirname(__file__), 'processed_hsts.json')
 LOG_FILE = os.path.join(os.path.dirname(__file__), 'wrapper.log')
+TEMP_DIR = os.path.join(os.path.dirname(__file__), 'temp')  # Local temp for fast IO
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Setup logging
+# Logging
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
@@ -57,32 +60,41 @@ def get_input_folders():
         print("Invalid choice. Exiting.")
         exit(1)
 
-def process_hst_to_csv(args):
-    hst_file = args
-    cmd = ["python", TRENDCONVERT_PATH, hst_file, "-o", "csv", "-s", "-outdir", os.path.dirname(SHARED_OUTPUT)]
+def process_hst_to_csv(hst_file):
+    start_time = time.perf_counter()
+    cmd = ["python", TRENDCONVERT_PATH, hst_file, "-o", "csv", "-s", "-outdir", TEMP_DIR]
     for attempt in range(3):
         try:
             result = subprocess.run(cmd, capture_output=False, text=True, check=True)
             logging.info(f"✓ Processed {os.path.basename(hst_file)}")
             
             base_name = os.path.splitext(os.path.basename(hst_file))[0]
-            csv_file = os.path.join(os.path.dirname(SHARED_OUTPUT), f"{base_name}.csv")
-            if os.path.exists(csv_file):
+            csv_temp = os.path.join(TEMP_DIR, f"{base_name}.csv")
+            if os.path.exists(csv_temp):
                 # Rename 'Time' to 'Timestamp'
-                df = pd.read_csv(csv_file)
+                df = pd.read_csv(csv_temp)
                 df.rename(columns={'Time': 'Timestamp'}, inplace=True)
-                df.to_csv(csv_file, index=False)
+                df.to_csv(csv_temp, index=False)
                 logging.info("  ✓ Renamed 'Time' to 'Timestamp' in CSV")
                 
-                # Compress and copy to shared
-                gz_file = csv_file + '.gz'
-                with open(csv_file, 'rb') as f_in, gzip.open(gz_file, 'wb') as f_out:
+                # Compress (level=6 for speed)
+                gz_temp = csv_temp + '.gz'
+                with open(csv_temp, 'rb') as f_in, gzip.open(gz_temp, 'wb', compresslevel=6) as f_out:
                     shutil.copyfileobj(f_in, f_out)
-                shutil.copy(gz_file, SHARED_OUTPUT)
-                os.remove(csv_file)  # Clean temp
-                os.remove(gz_file)
-                logging.info(f"  ✓ Compressed and transferred {base_name}.csv.gz to shared")
-                return os.path.join(SHARED_OUTPUT, f"{base_name}.csv.gz")
+                logging.info(f"  ✓ Compressed {base_name}.csv.gz")
+                
+                # Copy to shared
+                gz_shared = os.path.join(SHARED_OUTPUT, os.path.basename(gz_temp))
+                shutil.copy(gz_temp, gz_shared)
+                logging.info(f"  ✓ Transferred {base_name}.csv.gz to shared")
+                
+                # Clean temp
+                os.remove(csv_temp)
+                os.remove(gz_temp)
+                
+                elapsed = time.perf_counter() - start_time
+                logging.info(f"  Time: {elapsed:.2f}s")
+                return gz_shared
             return None
         except Exception as e:
             logging.warning(f"Attempt {attempt+1} failed for {hst_file}: {e}")
@@ -97,7 +109,7 @@ if __name__ == '__main__':
     # User prompts
     input_folders = get_input_folders()
     max_processes = int(get_user_input(f"Max processes (default {cpu_count() - 2}): ", cpu_count() - 2))
-    batch_size = int(get_user_input("Max HSTs per batch (for 6TB, suggest 100): ", 100))
+    batch_size = int(get_user_input("Max HSTs per batch (for large data, suggest 200): ", 200))
     
     processed = load_progress()
     
