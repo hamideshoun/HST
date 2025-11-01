@@ -13,9 +13,9 @@ from multiprocessing import Pool, cpu_count, freeze_support
 from tqdm import tqdm
 
 # Config
-DEFAULT_INPUT_FOLDER = r"D:\khayyamian\Hamid\data"
-TRENDCONVERT_PATH = r"D:\khayyamian\Hamid\trendconvert\trendconvert.py"
-SHARED_OUTPUT = r'\\WIN-QK1JS7CVQ3C\Users\Administrator\Desktop\Elahi Test'  # VM #2 shared
+DEFAULT_INPUT_FOLDER = r"D:\Acronis Backup\ipc backup\server  2\2023-04-26\TRENDDATA11"
+TRENDCONVERT_PATH = r"C:\Users\Administrator\Desktop\HST Translator\HST\trendconvert\trendconvert.py"
+SHARED_OUTPUT = r'Y:\\'  # VM #2 shared
 PROGRESS_FILE = os.path.join(os.path.dirname(__file__), 'processed_hsts.json')  # Resume tracking
 LOG_FILE = os.path.join(os.path.dirname(__file__), 'wrapper.log')
 
