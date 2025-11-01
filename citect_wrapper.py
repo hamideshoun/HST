@@ -17,21 +17,20 @@ from tqdm import tqdm
 def load_config():
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     if not os.path.exists(config_path):
-        logging.error(f"Config file not found: {config_path}")
+        logging.error("config.json not found!")
         exit(1)
     with open(config_path, 'r') as f:
         return json.load(f)
 
 CONFIG = load_config()
 
+# From config
 DEFAULT_INPUT_FOLDER = CONFIG['default_input_folder']
 TRENDCONVERT_PATH = CONFIG['trendconvert_path']
 SHARED_OUTPUT = CONFIG['shared_output']
-PROGRESS_FILE = CONFIG['progress_file']
-LOG_FILE = CONFIG['log_file']
-TEMP_DIR = CONFIG['temp_dir']
-MAX_TEMP_SIZE_GB = CONFIG['max_temp_size_gb']  # e.g., 3
-
+PROGRESS_FILE = os.path.join(os.path.dirname(__file__), CONFIG['progress_file'])
+LOG_FILE = os.path.join(os.path.dirname(__file__), CONFIG['log_file'])
+TEMP_DIR = os.path.join(os.path.dirname(__file__), CONFIG['temp_dir'])
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Logging
@@ -49,23 +48,6 @@ def load_progress():
 def save_progress(processed):
     with open(PROGRESS_FILE, 'w') as f:
         json.dump(list(processed), f)
-
-def get_temp_size():
-    total_size = 0
-    for dirpath, dirnames, filenames in os.walk(TEMP_DIR):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            total_size += os.path.getsize(fp)
-    return total_size / (1024 * 1024 * 1024)  # GB
-
-def clean_temp_if_needed():
-    while get_temp_size() > MAX_TEMP_SIZE_GB * 0.8:  # Clean at 80% threshold
-        files = glob.glob(os.path.join(TEMP_DIR, '*'))
-        if not files:
-            break
-        oldest_file = min(files, key=os.path.getctime)
-        os.remove(oldest_file)
-        logging.info(f"Cleaned temp file: {oldest_file}")
 
 def get_user_input(prompt, default=None):
     user_input = input(prompt).strip()
@@ -92,7 +74,7 @@ def get_input_folders():
 def process_hst_to_csv(hst_file):
     start_time = time.perf_counter()
     cmd = ["python", TRENDCONVERT_PATH, hst_file, "-o", "csv", "-s", "-outdir", TEMP_DIR]
-    for attempt in range(3):
+    for attempt in range(CONFIG['max_retries']):
         try:
             result = subprocess.run(cmd, capture_output=False, text=True, check=True)
             logging.info(f"✓ Processed {os.path.basename(hst_file)}")
@@ -106,22 +88,21 @@ def process_hst_to_csv(hst_file):
                 df.to_csv(csv_temp, index=False)
                 logging.info("  ✓ Renamed 'Time' to 'Timestamp' in CSV")
                 
-                # Compress (level=6 for speed)
+                # Compress (from config level)
                 gz_temp = csv_temp + '.gz'
-                with open(csv_temp, 'rb') as f_in, gzip.open(gz_temp, 'wb', compresslevel=6) as f_out:
+                with open(csv_temp, 'rb') as f_in, gzip.open(gz_temp, 'wb', compresslevel=CONFIG['gzip_level']) as f_out:
                     shutil.copyfileobj(f_in, f_out)
                 logging.info(f"  ✓ Compressed {base_name}.csv.gz")
                 
-                # Copy to shared
+                # Immediate transfer to shared
                 gz_shared = os.path.join(SHARED_OUTPUT, os.path.basename(gz_temp))
                 shutil.copy(gz_temp, gz_shared)
                 logging.info(f"  ✓ Transferred {base_name}.csv.gz to shared")
                 
-                # Clean temp immediately
+                # Immediate clean (free space)
                 os.remove(csv_temp)
                 os.remove(gz_temp)
-                
-                clean_temp_if_needed()  # Extra clean if near limit
+                logging.info("  ✓ Cleaned local temp files")
                 
                 elapsed = time.perf_counter() - start_time
                 logging.info(f"  Time: {elapsed:.2f}s")
@@ -129,34 +110,35 @@ def process_hst_to_csv(hst_file):
             return None
         except Exception as e:
             logging.warning(f"Attempt {attempt+1} failed for {hst_file}: {e}")
-    logging.error(f"✗ Failed {os.path.basename(hst_file)} after 3 attempts")
+    logging.error(f"✗ Failed {os.path.basename(hst_file)} after {CONFIG['max_retries']} attempts")
     return None
 
 if __name__ == '__main__':
     freeze_support()
     
-    logging.info("🚀 Starting HST to CSV on VM #1 (saves compressed to VM #2 shared)")
+    logging.info("🚀 Starting HST to CSV on VM #1 (immediate compressed transfer to VM #2)")
     
     # User prompts
     input_folders = get_input_folders()
     max_processes = int(get_user_input(f"Max processes (default {cpu_count() - 2}): ", cpu_count() - 2))
-    batch_size = int(get_user_input("Max HSTs per batch (for large data, suggest 200): ", 200))
+    batch_size = int(get_user_input("Max HSTs per batch (suggest 200 for large data): ", 200))
     
     processed = load_progress()
     
-    # Collect tasks, skip processed
+    # Collect tasks, skip processed or if gz exists on shared
     tasks = []
     for input_folder in input_folders:
         logging.info(f"\nProcessing folder: {input_folder}")
         hst_files = glob.glob(os.path.join(input_folder, "*.hst"))
         logging.info(f"📋 Found {len(hst_files)} HST files")
         for hst in hst_files:
-            if hst not in processed:
+            base_name = os.path.splitext(os.path.basename(hst))[0]
+            gz_shared = os.path.join(SHARED_OUTPUT, f"{base_name}.csv.gz")
+            if hst not in processed and not os.path.exists(gz_shared):
                 tasks.append(hst)
     
     # Process in batches
     csv_files = []
-    total_start = time.perf_counter()
     for i in range(0, len(tasks), batch_size):
         batch = tasks[i:i+batch_size]
         logging.info(f"\nParallel processing batch {i//batch_size + 1} ({len(batch)} files)...")
@@ -164,9 +146,7 @@ if __name__ == '__main__':
             batch_csvs = list(tqdm(pool.imap(process_hst_to_csv, batch), total=len(batch), desc="Converting HSTs"))
         csv_files.extend([c for c in batch_csvs if c])
         # Update progress
-        processed.update([t for t in batch if process_hst_to_csv(t)])  # Only add successful
+        processed.update(batch)
         save_progress(processed)
     
-    total_elapsed = time.perf_counter() - total_start
-    logging.info(f"\nTotal time: {total_elapsed / 3600:.2f} hours")
-    logging.info("\n🎉 CSVs (compressed) saved to VM #2 shared folder. Run inserter on VM #2.")
+    logging.info("\n🎉 All CSVs transferred immediately to VM #2 shared folder. Run inserter on VM #2.")
