@@ -1,0 +1,9 @@
+{
+  "default_input_folder": "D:\\khayyamian\\Hamid\\data",
+  "trendconvert_path": "D:\\khayyamian\\Hamid\\trendconvert\\trendconvert.py",
+  "shared_output": "Y:\\",
+  "progress_file": "processed_hsts.json",
+  "log_file": "wrapper.log",
+  "temp_dir": "temp",
+  "max_temp_size_gb": 3
+}
