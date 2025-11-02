@@ -17,7 +17,7 @@ from tqdm import tqdm
 def load_config():
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     if not os.path.exists(config_path):
-        logging.error("config.json not found!")
+        print("config.json not found!")
         exit(1)
     with open(config_path, 'r') as f:
         return json.load(f)
@@ -29,15 +29,10 @@ DEFAULT_INPUT_FOLDER = CONFIG['default_input_folder']
 TRENDCONVERT_PATH = CONFIG['trendconvert_path']
 SHARED_OUTPUT = CONFIG['shared_output']
 PROGRESS_FILE = os.path.join(os.path.dirname(__file__), CONFIG['progress_file'])
-LOG_FILE = os.path.join(os.path.dirname(__file__), CONFIG['log_file'])
+LOG_DIR = os.path.join(os.path.dirname(__file__), CONFIG.get('log_dir', '.'))
 TEMP_DIR = os.path.join(os.path.dirname(__file__), CONFIG['temp_dir'])
 os.makedirs(TEMP_DIR, exist_ok=True)
-
-# Logging
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-console = logging.StreamHandler()
-console.setLevel(logging.INFO)
-logging.getLogger().addHandler(console)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 def load_progress():
     if os.path.exists(PROGRESS_FILE):
@@ -71,64 +66,91 @@ def get_input_folders():
         print("Invalid choice. Exiting.")
         exit(1)
 
+def get_total_size(folder):
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if not os.path.islink(fp):
+                total += os.path.getsize(fp)
+    return total / (1024 * 1024 * 1024)  # GB
+
 def process_hst_to_csv(hst_file):
     start_time = time.perf_counter()
+    hst_size = os.path.getsize(hst_file) / (1024 * 1024)  # MB
+    logging.info(f"Processing {os.path.basename(hst_file)} (Size: {hst_size:.2f} MB)")
     cmd = ["python", TRENDCONVERT_PATH, hst_file, "-o", "csv", "-s", "-outdir", TEMP_DIR]
     for attempt in range(CONFIG['max_retries']):
         try:
+            conv_start = time.perf_counter()
             result = subprocess.run(cmd, capture_output=False, text=True, check=True)
-            logging.info(f"✓ Processed {os.path.basename(hst_file)}")
+            conv_time = time.perf_counter() - conv_start
+            logging.info(f"  ✓ Conversion time: {conv_time:.2f}s")
             
             base_name = os.path.splitext(os.path.basename(hst_file))[0]
             csv_temp = os.path.join(TEMP_DIR, f"{base_name}.csv")
             if os.path.exists(csv_temp):
-                # Rename 'Time' to 'Timestamp'
+                rename_start = time.perf_counter()
                 df = pd.read_csv(csv_temp)
                 df.rename(columns={'Time': 'Timestamp'}, inplace=True)
                 df.to_csv(csv_temp, index=False)
-                logging.info("  ✓ Renamed 'Time' to 'Timestamp' in CSV")
+                rename_time = time.perf_counter() - rename_start
+                csv_size = os.path.getsize(csv_temp) / (1024 * 1024)  # MB
                 
-                # Compress (from config level)
+                comp_start = time.perf_counter()
                 gz_temp = csv_temp + '.gz'
                 with open(csv_temp, 'rb') as f_in, gzip.open(gz_temp, 'wb', compresslevel=CONFIG['gzip_level']) as f_out:
                     shutil.copyfileobj(f_in, f_out)
-                logging.info(f"  ✓ Compressed {base_name}.csv.gz")
+                comp_time = time.perf_counter() - comp_start
+                gz_size = os.path.getsize(gz_temp) / (1024 * 1024)  # MB
+                logging.info(f"  ✓ Compressed (CSV: {csv_size:.2f}MB → gz: {gz_size:.2f}MB, time: {comp_time:.2f}s)")
                 
-                # Immediate transfer to shared
+                trans_start = time.perf_counter()
                 gz_shared = os.path.join(SHARED_OUTPUT, os.path.basename(gz_temp))
                 shutil.copy(gz_temp, gz_shared)
-                logging.info(f"  ✓ Transferred {base_name}.csv.gz to shared")
+                trans_time = time.perf_counter() - trans_start
+                logging.info(f"  ✓ Transferred (time: {trans_time:.2f}s)")
                 
-                # Immediate clean (free space)
                 os.remove(csv_temp)
                 os.remove(gz_temp)
                 logging.info("  ✓ Cleaned local temp files")
                 
                 elapsed = time.perf_counter() - start_time
-                logging.info(f"  Time: {elapsed:.2f}s")
+                logging.info(f"  Total time: {elapsed:.2f}s")
                 return gz_shared
             return None
         except Exception as e:
-            logging.warning(f"Attempt {attempt+1} failed for {hst_file}: {e}")
+            logging.exception(f"Attempt {attempt+1} failed for {hst_file}: {e}")
     logging.error(f"✗ Failed {os.path.basename(hst_file)} after {CONFIG['max_retries']} attempts")
     return None
 
 if __name__ == '__main__':
     freeze_support()
     
+    # Unique log file
+    now_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    input_folders = get_input_folders()  # Get folders first for title
+    first_folder_name = os.path.basename(input_folders[0]).replace(' ', '_') if input_folders else "no_folder"
+    log_file = os.path.join(LOG_DIR, f"wrapper_{first_folder_name}_{now_str}.log")
+    logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.getLogger().handlers[0].baseFilename = log_file  # Update handler
+    
     logging.info("🚀 Starting HST to CSV on VM #1 (immediate compressed transfer to VM #2)")
     
     # User prompts
-    input_folders = get_input_folders()
     max_processes = int(get_user_input(f"Max processes (default {cpu_count() - 2}): ", cpu_count() - 2))
     batch_size = int(get_user_input("Max HSTs per batch (suggest 200 for large data): ", 200))
     
     processed = load_progress()
     
-    # Collect tasks, skip processed or if gz exists on shared
+    # Collect tasks, skip processed or if gz exists on shared; log total size
     tasks = []
+    total_size_gb = 0
     for input_folder in input_folders:
         logging.info(f"\nProcessing folder: {input_folder}")
+        folder_size_gb = get_total_size(input_folder)
+        total_size_gb += folder_size_gb
+        logging.info(f"  Folder size: {folder_size_gb:.2f} GB")
         hst_files = glob.glob(os.path.join(input_folder, "*.hst"))
         logging.info(f"📋 Found {len(hst_files)} HST files")
         for hst in hst_files:
@@ -136,6 +158,9 @@ if __name__ == '__main__':
             gz_shared = os.path.join(SHARED_OUTPUT, f"{base_name}.csv.gz")
             if hst not in processed and not os.path.exists(gz_shared):
                 tasks.append(hst)
+    
+    logging.info(f"Total data to process: {total_size_gb:.2f} GB")
+    logging.info(f"Estimated time (based on 18.5GB/80min): ~{(total_size_gb / 18.5 * 80 / 60):.1f} hours")
     
     # Process in batches
     csv_files = []
