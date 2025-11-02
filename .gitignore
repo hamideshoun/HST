@@ -4,4 +4,4 @@ __pycache__/
 *.csv  # Ignore generated CSVs
 output/
 
-# config.json
+config.json
