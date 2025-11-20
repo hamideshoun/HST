@@ -53,7 +53,6 @@ def parseArgs():
     parser.add_argument("-start", type=str, metavar="DATE", help="Start date (YYYY-MM-DD)")
     parser.add_argument("-stop", type=str, metavar="DATE", help="End date (YYYY-MM-DD)")
     parser.add_argument("-f", type=int, metavar="NUM", help="Select file to export.")
-    parser.add_argument("-d", default=True, action="store_false", help="Do not discard invalid values from samples.")
     parser.add_argument("-p", type=int, default=1, metavar="NUM", help="Number of decimals shown in values. (Default: 1)")
     parser.add_argument("-outdir", type=str, default=".", help="Output directory for generated files")
     args = parser.parse_args()
@@ -317,10 +316,11 @@ def main():
                         if not bytes:
                             break
                         value = int.from_bytes(bytes, "little", signed=True)
-                        if args.d and (value == -32001 or value == -32002):
-                            x += 1
-                            continue
-                        calc_value = calcValue(e, value, args.p)
+                        if value == -32001 or value == -32002:
+                            calc_value = float('nan')  # Insert NA
+                            print(f"NA inserted at sample {x}")
+                        else:
+                            calc_value = calcValue(e, value, args.p)
                         realtime = h.StartTime + timedelta(seconds=sp * x)
                         
                         if startTime and stopTime:
@@ -337,11 +337,12 @@ def main():
                         if not bytes:
                             break
                         value = struct.unpack("@d", bytes)[0]
-                        if args.d and math.isnan(value):
-                            x += 1
-                            continue
+                        if math.isnan(value):
+                            rounded_value = float('nan')  # Insert NA
+                            print(f"NA inserted at sample {x}")
+                        else:
+                            rounded_value = round(value, args.p)
                         realtime = h.StartTime + timedelta(microseconds=h.SamplePediod * 1000 * x)
-                        rounded_value = round(value, args.p)
                         
                         if startTime and stopTime:
                             if realtime >= startTime and realtime <= stopTime:
