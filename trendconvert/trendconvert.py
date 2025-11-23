@@ -317,10 +317,9 @@ def main():
                             break
                         value = int.from_bytes(bytes, "little", signed=True)
                         if value == -32001 or value == -32002:
-                            calc_value = float('nan')  # Insert NA
-                            print(f"NA inserted at sample {x}")
-                        else:
-                            calc_value = calcValue(e, value, args.p)
+                            x += 1
+                            continue  # Omit NA
+                        calc_value = calcValue(e, value, args.p)
                         realtime = h.StartTime + timedelta(seconds=sp * x)
                         
                         if startTime and stopTime:
@@ -338,11 +337,10 @@ def main():
                             break
                         value = struct.unpack("@d", bytes)[0]
                         if math.isnan(value):
-                            rounded_value = float('nan')  # Insert NA
-                            print(f"NA inserted at sample {x}")
-                        else:
-                            rounded_value = round(value, args.p)
+                            x += 1
+                            continue  # Omit NA
                         realtime = h.StartTime + timedelta(microseconds=h.SamplePediod * 1000 * x)
+                        rounded_value = round(value, args.p)
                         
                         if startTime and stopTime:
                             if realtime >= startTime and realtime <= stopTime:
