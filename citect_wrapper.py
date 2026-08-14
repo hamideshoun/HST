@@ -138,7 +138,7 @@ if __name__ == '__main__':
     logging.info("🚀 Starting HST to CSV on VM #1 (immediate compressed transfer to VM #2)")
     
     # User prompts
-    max_processes = int(get_user_input(f"Max processes (default {cpu_count() - 2}): ", cpu_count() - 2))
+    max_processes = int(get_user_input(f"Max processor cores (default {cpu_count() - 2}): ", cpu_count() - 2))
     batch_size = int(get_user_input("Max HSTs per batch (suggest 200 for large data): ", 200))
     
     processed = load_progress()

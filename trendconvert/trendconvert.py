@@ -291,8 +291,9 @@ def main():
     base_name = os.path.splitext(os.path.basename(args.file))[0]
     output_file = os.path.join(args.outdir, f"{base_name}.csv")
     
-    with open(output_file, "w", newline="") as file:
-        writer = csv.writer(file)
+    # Open file ONCE and keep it open for all data files
+    with open(output_file, "w", newline="") as csv_file:
+        writer = csv.writer(csv_file)
         writer.writerow(["Time", "Value"])
         
         for data_idx in datalist:
@@ -303,19 +304,30 @@ def main():
                 
             print(f"Processing {os.path.basename(data_file)}...")
             
-            with open(data_file, "rb") as f:
-                f.read(112)  # Skip title
-                e = readScales(f)
+            # Use a different variable name to avoid confusion with outer csv_file
+            with open(data_file, "rb") as data_f:
+                data_f.read(112)  # Skip title
+                e = readScales(data_f)
 
                 if m.Data_headers[data_idx].Version == 5:
-                    h = readOldDataHeader(f)
+                    h = readOldDataHeader(data_f)
                     sp = h.SamplePediod / 1000
                     x = 0
+                    
+                    # *** ADD THIS: Get the max valid sample count ***
+                    max_valid_samples = h.FilePointer
+                    
                     while True:
-                        bytes = f.read(2)
-                        if not bytes:
+                        bytes_read = data_f.read(2)
+                        if not bytes_read:
                             break
-                        value = int.from_bytes(bytes, "little", signed=True)
+                            
+                        # *** ADD THIS CHECK: Skip uninitialized data ***
+                        if x >= max_valid_samples:
+                            x += 1
+                            continue
+                            
+                        value = int.from_bytes(bytes_read, "little", signed=True)
                         if value == -32001 or value == -32002:
                             x += 1
                             continue  # Omit NA
@@ -329,13 +341,23 @@ def main():
                             writer.writerow([realtime, calc_value])
                         x += 1
                 else:  # 8-byte version
-                    h = readNewDataHeader(f)
+                    h = readNewDataHeader(data_f)
                     x = 0
+                    
+                    # *** ADD THIS: Get the max valid sample count ***
+                    max_valid_samples = h.FilePointer
+                    
                     while True:
-                        bytes = f.read(8)
-                        if not bytes:
+                        bytes_read = data_f.read(8)
+                        if not bytes_read:
                             break
-                        value = struct.unpack("@d", bytes)[0]
+                            
+                        # *** ADD THIS CHECK: Skip uninitialized data ***
+                        if x >= max_valid_samples:
+                            x += 1
+                            continue
+                            
+                        value = struct.unpack("@d", bytes_read)[0]
                         if math.isnan(value):
                             x += 1
                             continue  # Omit NA
@@ -348,8 +370,9 @@ def main():
                         else:
                             writer.writerow([realtime, rounded_value])
                         x += 1
-                        
+    
+    # File is closed here after ALL data files are processed
     print(f"✓ Combined CSV saved: {output_file}")
-
+    
 if __name__ == "__main__":
     main()
